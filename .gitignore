@@ -1,0 +1,13 @@
+# Build output
+build/
+*.o
+
+# Generated compiler output
+tac.txt
+symtab.txt
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

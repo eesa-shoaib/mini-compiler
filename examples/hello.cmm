@@ -1,0 +1,30 @@
+int add(int a, int b) {
+    int sum;
+    sum = a + b;
+    return sum;
+}
+
+int main() {
+    int x, y, result;
+    char grade;
+
+    in(x);
+    in(y);
+
+    if (x >= y) {
+        result = x - y;
+    } else {
+        result = y - x;
+    }
+
+    while (x != 0) {
+        x = x - 1;
+    }
+
+    grade = 'A';
+
+    out(result);
+    out(grade);
+
+    return 0;
+}
