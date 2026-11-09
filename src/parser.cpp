@@ -103,12 +103,14 @@ void Parser::parseFunctionTail() {
         advance();
     } else if (current.type != TOK_RPAREN) {
         string type = parseValueType();
-        gen.addSymbol(current.lexeme, "parameter", type);
+        const string first = current.lexeme;
         expect(TOK_ID, "parameter name");
+        gen.addSymbol(first, "parameter", type);
         while (accept(TOK_COMMA)) {
             type = parseValueType();
-            gen.addSymbol(current.lexeme, "parameter", type);
+            const string param = current.lexeme;
             expect(TOK_ID, "parameter name");
+            gen.addSymbol(param, "parameter", type);
         }
     }
     expect(TOK_RPAREN, "')'");
@@ -117,8 +119,9 @@ void Parser::parseFunctionTail() {
 
 void Parser::parseVariableTail(const string& type) {
     while (accept(TOK_COMMA)) {
-        gen.addSymbol(current.lexeme, "variable", type);
+        const string name = current.lexeme;
         expect(TOK_ID, "identifier");
+        gen.addSymbol(name, "variable", type);
     }
     expect(TOK_SEMI, "';'");
 }
@@ -127,8 +130,9 @@ void Parser::parseCompoundStatement() {
     expect(TOK_LBRACE, "'{'");
     while (current.type == TOK_KW_INT || current.type == TOK_KW_CHAR) {
         const string type = parseValueType();
-        gen.addSymbol(current.lexeme, "variable", type);
+        const string name = current.lexeme;
         expect(TOK_ID, "identifier");
+        gen.addSymbol(name, "variable", type);
         parseVariableTail(type);
     }
     while (current.type != TOK_RBRACE && current.type != TOK_EOF) {
