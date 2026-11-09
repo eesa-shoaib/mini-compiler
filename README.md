@@ -81,8 +81,9 @@ Syntax error at line 6: expected '{' near 'x'
 relational operators, integer and character constants.
 
 Not supported: comments, unary operators, function calls, prototypes, unbraced
-`if`/`while` bodies, nested control-flow requirements, AST construction, type
-checking, and native code generation. The symbol table records declared
+`if`/`while` bodies, AST construction, type checking, and native code
+generation. (Control statements nest naturally because the parser is
+recursive descent; the course just doesn't require handling that case.) The symbol table records declared
 identifiers (functions, parameters, variables); compiler temporaries are only
 named in the TAC.
 
