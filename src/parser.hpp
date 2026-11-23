@@ -22,7 +22,6 @@ public:
     void parse();
 
     CodeGen& codegen();
-    const CodeGen& codegen() const;
 
 private:
     Lexer lexer;
@@ -38,11 +37,15 @@ private:
     string parseValueType();
     void parseExternalDeclaration();
     void parseFunctionTail();
-    void parseVariableTail(const string& type);
+    void parseParameter();
+    void parseVariableTail(const string& type, bool isGlobal = false);
+    void parseVariableDeclaration(const string& type, bool isGlobal = false);
     void parseCompoundStatement();
     void parseStatement();
+    int parseArguments();
 
     string parseExpression();
+    string emitBinary(const string& left, const string& op, const string& right);
     static bool isRelationalOperator(TokenType type);
     string parseAdditiveExpression();
     string parseTerm();
