@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <stdexcept>
 #include <map>
+#include <set>
 #include <cctype>
 #include <istream>
 #include <string>
@@ -17,7 +18,12 @@ public:
     string newLabel();
 
     void emit(const string& line);
-    void addSymbol(const string& name, const string& kind, const string& type);
+    void addSymbol(const string& name, const string& kind, const string& type,
+                   bool isGlobal = false);
+
+    const vector<string>& tacLines() const;
+    map<string, string> symbolTypes() const;
+    set<string> globalNames() const;
 
     void writeOutputs(const string& tacPath, const string& symPath) const;
 
@@ -32,6 +38,7 @@ private:
 
     vector<string> tac;
     vector<Symbol> symbols;
+    set<string> globals;
     int nextAddress = 1000;
     int tempCount = 0;
     int labelCount = 0;
@@ -81,7 +88,6 @@ public:
     void parse();
 
     CodeGen& codegen();
-    const CodeGen& codegen() const;
 
 private:
     Lexer lexer;
@@ -97,15 +103,60 @@ private:
     string parseValueType();
     void parseExternalDeclaration();
     void parseFunctionTail();
-    void parseVariableTail(const string& type);
+    void parseParameter();
+    void parseVariableTail(const string& type, bool isGlobal = false);
+    void parseVariableDeclaration(const string& type, bool isGlobal = false);
     void parseCompoundStatement();
     void parseStatement();
+    int parseArguments();
 
     string parseExpression();
+    string emitBinary(const string& left, const string& op, const string& right);
     static bool isRelationalOperator(TokenType type);
     string parseAdditiveExpression();
     string parseTerm();
     string parseFactor();
+};
+
+class VMError : public runtime_error {
+public:
+    explicit VMError(const string& message);
+};
+
+class VirtualMachine {
+public:
+    VirtualMachine(const vector<string>& tac,
+                   const map<string, string>& types,
+                   const set<string>& globalNames);
+
+    void run();
+
+private:
+    struct Function {
+        size_t begin = 0;
+        size_t end = 0;
+    };
+
+    vector<string> code;
+    map<string, size_t> labels;
+    map<string, Function> functions;
+    map<string, vector<string>> formals;
+    map<string, string> types;
+    map<string, int> globals;
+
+    void load();
+    int execute(const string& name, map<string, int>& locals);
+    int call(const string& nameToken, const string& countToken,
+             size_t pc, vector<int>& pending);
+    void printOutput(const string& token, map<string, int>& locals) const;
+    int operand(const string& token, map<string, int>& locals) const;
+    void assign(const string& name, int value, map<string, int>& locals);
+    int apply(const string& op, int left, int right, size_t pc) const;
+    size_t label(const string& name) const;
+    VMError fail(size_t pc, const string& message) const;
+
+    static bool isCharLiteral(const string& token);
+    static vector<string> split(const string& line);
 };
 
 string CodeGen::newTemp() {
@@ -120,9 +171,27 @@ void CodeGen::emit(const string& line) {
     tac.push_back(line);
 }
 
-void CodeGen::addSymbol(const string& name, const string& kind, const string& type) {
+void CodeGen::addSymbol(const string& name, const string& kind, const string& type,
+                        bool isGlobal) {
     symbols.push_back(Symbol{name, kind, type, nextAddress, "-"});
+    if (isGlobal && kind == "variable") globals.insert(name);
     nextAddress += 4;
+}
+
+const vector<string>& CodeGen::tacLines() const {
+    return tac;
+}
+
+map<string, string> CodeGen::symbolTypes() const {
+    map<string, string> types;
+    for (const Symbol& symbol : symbols) {
+        types[symbol.name] = symbol.type;
+    }
+    return types;
+}
+
+set<string> CodeGen::globalNames() const {
+    return globals;
 }
 
 void CodeGen::writeOutputs(const string& tacPath, const string& symPath) const {
@@ -414,7 +483,6 @@ void Parser::parse() {
 }
 
 CodeGen& Parser::codegen() { return gen; }
-const CodeGen& Parser::codegen() const { return gen; }
 
 void Parser::advance() {
     current = lexer.getNextToken();
@@ -466,13 +534,8 @@ string Parser::parseValueType() {
 
 void Parser::parseExternalDeclaration() {
     const bool isVoid = current.type == TOK_KW_VOID;
-    string type;
-    if (isVoid) {
-        type = "void";
-        advance();
-    } else {
-        type = parseValueType();
-    }
+    const string type = isVoid ? "void" : parseValueType();
+    if (isVoid) advance();
 
     const string name = current.lexeme;
     expect(TOK_ID, "identifier");
@@ -488,8 +551,8 @@ void Parser::parseExternalDeclaration() {
     if (isVoid) {
         syntaxError("'void' is only valid as a function return type");
     }
-    gen.addSymbol(name, "variable", type);
-    parseVariableTail(type);
+    gen.addSymbol(name, "variable", type, true);
+    parseVariableTail(type, true);
 }
 
 void Parser::parseFunctionTail() {
@@ -497,38 +560,41 @@ void Parser::parseFunctionTail() {
     if (current.type == TOK_KW_VOID) {
         advance();
     } else if (current.type != TOK_RPAREN) {
-        string type = parseValueType();
-        const string first = current.lexeme;
-        expect(TOK_ID, "parameter name");
-        gen.addSymbol(first, "parameter", type);
-        while (accept(TOK_COMMA)) {
-            type = parseValueType();
-            const string param = current.lexeme;
-            expect(TOK_ID, "parameter name");
-            gen.addSymbol(param, "parameter", type);
-        }
+        do {
+            parseParameter();
+        } while (accept(TOK_COMMA));
     }
     expect(TOK_RPAREN, "')'");
     parseCompoundStatement();
 }
 
-void Parser::parseVariableTail(const string& type) {
+void Parser::parseParameter() {
+    const string type = parseValueType();
+    const string name = current.lexeme;
+    expect(TOK_ID, "parameter name");
+    gen.addSymbol(name, "parameter", type);
+    gen.emit("param " + name);
+}
+
+void Parser::parseVariableTail(const string& type, bool isGlobal) {
     while (accept(TOK_COMMA)) {
-        const string name = current.lexeme;
-        expect(TOK_ID, "identifier");
-        gen.addSymbol(name, "variable", type);
+        parseVariableDeclaration(type, isGlobal);
     }
     expect(TOK_SEMI, "';'");
+}
+
+void Parser::parseVariableDeclaration(const string& type, bool isGlobal) {
+    const string name = current.lexeme;
+    expect(TOK_ID, "identifier");
+    gen.addSymbol(name, "variable", type, isGlobal);
 }
 
 void Parser::parseCompoundStatement() {
     expect(TOK_LBRACE, "'{'");
     while (current.type == TOK_KW_INT || current.type == TOK_KW_CHAR) {
         const string type = parseValueType();
-        const string name = current.lexeme;
-        expect(TOK_ID, "identifier");
-        gen.addSymbol(name, "variable", type);
-        parseVariableTail(type);
+        parseVariableDeclaration(type, false);
+        parseVariableTail(type, false);
     }
     while (current.type != TOK_RBRACE && current.type != TOK_EOF) {
         parseStatement();
@@ -539,12 +605,18 @@ void Parser::parseCompoundStatement() {
 void Parser::parseStatement() {
     switch (current.type) {
         case TOK_ID: {
-            const string target = current.lexeme;
+            const string name = current.lexeme;
             advance();
+            if (current.type == TOK_LPAREN) {
+                const int argc = parseArguments();
+                gen.emit("call " + name + ", " + to_string(argc));
+                expect(TOK_SEMI, "';'");
+                return;
+            }
             expect(TOK_ASSIGN, "'='");
             const string value = parseExpression();
             expect(TOK_SEMI, "';'");
-            gen.emit(target + " = " + value);
+            gen.emit(name + " = " + value);
             return;
         }
         case TOK_KW_IF: {
@@ -602,11 +674,10 @@ void Parser::parseStatement() {
         }
         case TOK_KW_RETURN:
             advance();
-            if (current.type != TOK_SEMI) {
-                const string value = parseExpression();
-                gen.emit("return " + value);
-            } else {
+            if (current.type == TOK_SEMI) {
                 gen.emit("return");
+            } else {
+                gen.emit("return " + parseExpression());
             }
             expect(TOK_SEMI, "';'");
             return;
@@ -622,16 +693,17 @@ void Parser::parseStatement() {
 }
 
 string Parser::parseExpression() {
-    string left = parseAdditiveExpression();
-    if (isRelationalOperator(current.type)) {
-        const string op = current.lexeme;
-        advance();
-        const string right = parseAdditiveExpression();
-        const string temp = gen.newTemp();
-        gen.emit(temp + " = " + left + " " + op + " " + right);
-        return temp;
-    }
-    return left;
+    const string left = parseAdditiveExpression();
+    if (!isRelationalOperator(current.type)) return left;
+    const string op = current.lexeme;
+    advance();
+    return emitBinary(left, op, parseAdditiveExpression());
+}
+
+string Parser::emitBinary(const string& left, const string& op, const string& right) {
+    const string temp = gen.newTemp();
+    gen.emit(temp + " = " + left + " " + op + " " + right);
+    return temp;
 }
 
 bool Parser::isRelationalOperator(TokenType type) {
@@ -644,10 +716,7 @@ string Parser::parseAdditiveExpression() {
     while (current.type == TOK_PLUS || current.type == TOK_MINUS) {
         const string op = current.lexeme;
         advance();
-        const string right = parseTerm();
-        const string temp = gen.newTemp();
-        gen.emit(temp + " = " + left + " " + op + " " + right);
-        left = temp;
+        left = emitBinary(left, op, parseTerm());
     }
     return left;
 }
@@ -658,17 +727,24 @@ string Parser::parseTerm() {
            current.type == TOK_MOD) {
         const string op = current.lexeme;
         advance();
-        const string right = parseFactor();
-        const string temp = gen.newTemp();
-        gen.emit(temp + " = " + left + " " + op + " " + right);
-        left = temp;
+        left = emitBinary(left, op, parseFactor());
     }
     return left;
 }
 
 string Parser::parseFactor() {
     switch (current.type) {
-        case TOK_ID:
+        case TOK_ID: {
+            const string name = current.lexeme;
+            advance();
+            if (current.type == TOK_LPAREN) {
+                const int argc = parseArguments();
+                const string temp = gen.newTemp();
+                gen.emit(temp + " = call " + name + ", " + to_string(argc));
+                return temp;
+            }
+            return name;
+        }
         case TOK_NUM:
         case TOK_CHARCONST: {
             const string place = current.lexeme;
@@ -686,27 +762,304 @@ string Parser::parseFactor() {
     }
 }
 
+int Parser::parseArguments() {
+    expect(TOK_LPAREN, "'('");
+    int count = 0;
+    if (current.type != TOK_RPAREN) {
+        do {
+            gen.emit("push " + parseExpression());
+            ++count;
+        } while (accept(TOK_COMMA));
+    }
+    expect(TOK_RPAREN, "')'");
+    return count;
+}
+
+VMError::VMError(const string& message) : runtime_error(message) {}
+
+VirtualMachine::VirtualMachine(const vector<string>& tac,
+                               const map<string, string>& types,
+                               const set<string>& globalNames)
+    : code(tac), types(types) {
+    for (const string& name : globalNames) {
+        globals[name] = 0;
+    }
+    load();
+}
+
+vector<string> VirtualMachine::split(const string& line) {
+    vector<string> tokens;
+    string token;
+    bool quoted = false;
+    for (char c : line) {
+        if (c == '\'') {
+            quoted = !quoted;
+            token += c;
+        } else if (isspace((unsigned char)c) && !quoted) {
+            if (!token.empty()) {
+                tokens.push_back(token);
+                token.clear();
+            }
+        } else {
+            token += c;
+        }
+    }
+    if (!token.empty()) tokens.push_back(token);
+    return tokens;
+}
+
+void VirtualMachine::load() {
+    string openFunction;
+    for (size_t i = 0; i < code.size(); ++i) {
+        const vector<string> tokens = split(code[i]);
+        if (tokens.empty()) continue;
+        if (tokens.size() == 2 && tokens[0] == "func") {
+            if (!openFunction.empty()) {
+                throw VMError("nested function definition '" + tokens[1] + "'");
+            }
+            openFunction = tokens[1];
+            functions[openFunction].begin = i + 1;
+        } else if (tokens.size() == 2 && tokens[0] == "endfunc") {
+            if (openFunction != tokens[1]) {
+                throw VMError("endfunc '" + tokens[1] + "' does not match func '" +
+                              openFunction + "'");
+            }
+            functions[tokens[1]].end = i;
+            openFunction.clear();
+        } else if (tokens.size() == 2 && tokens[0] == "param") {
+            if (openFunction.empty()) throw VMError("param outside a function");
+            formals[openFunction].push_back(tokens[1]);
+        } else if (tokens.size() == 1 && tokens[0].back() == ':') {
+            labels[tokens[0].substr(0, tokens[0].size() - 1)] = i;
+        }
+    }
+    if (!openFunction.empty()) {
+        throw VMError("missing endfunc for '" + openFunction + "'");
+    }
+}
+
+void VirtualMachine::run() {
+    if (functions.find("main") == functions.end()) {
+        throw VMError("no 'main' function in the TAC");
+    }
+    map<string, int> locals;
+    execute("main", locals);
+}
+
+int VirtualMachine::execute(const string& name, map<string, int>& locals) {
+    const Function& function = functions.at(name);
+    size_t pc = function.begin;
+    vector<int> pending;
+
+    while (pc < function.end) {
+        const size_t line = pc++;
+        const vector<string> tokens = split(code[line]);
+        if (tokens.empty() || tokens[0].back() == ':') continue;
+        const string& op = tokens[0];
+
+        if (op == "goto") {
+            pc = label(tokens[1]);
+        } else if (op == "ifFalse") {
+            if (operand(tokens[1], locals) == 0) pc = label(tokens[3]);
+        } else if (op == "in") {
+            int input;
+            if (!(cin >> input)) throw fail(line, "expected an integer input");
+            assign(tokens[1], input, locals);
+        } else if (op == "out") {
+            printOutput(tokens[1], locals);
+        } else if (op == "push") {
+            pending.push_back(operand(tokens[1], locals));
+        } else if (op == "call") {
+            call(tokens[1], tokens[2], line, pending);
+        } else if (op == "return") {
+            return tokens.size() > 1 ? operand(tokens[1], locals) : 0;
+        } else if (op == "param") {
+            continue;
+        } else if (tokens.size() >= 3 && tokens[1] == "=") {
+            if (tokens.size() == 5 && tokens[2] == "call") {
+                assign(tokens[0], call(tokens[3], tokens[4], line, pending), locals);
+            } else if (tokens.size() == 3) {
+                assign(tokens[0], operand(tokens[2], locals), locals);
+            } else if (tokens.size() == 5) {
+                assign(tokens[0],
+                       apply(tokens[3],
+                             operand(tokens[2], locals),
+                             operand(tokens[4], locals),
+                             line),
+                       locals);
+            } else {
+                throw fail(line, "unknown TAC instruction");
+            }
+        } else {
+            throw fail(line, "unknown TAC instruction");
+        }
+    }
+    return 0;
+}
+
+int VirtualMachine::call(const string& nameToken, const string& countToken,
+                         size_t pc, vector<int>& pending) {
+    string name = nameToken;
+    if (!name.empty() && name.back() == ',') name.pop_back();
+
+    int count;
+    try {
+        count = stoi(countToken);
+    } catch (const exception&) {
+        throw fail(pc, "bad argument count '" + countToken + "'");
+    }
+    if (count < 0 || static_cast<size_t>(count) > pending.size()) {
+        throw VMError("not enough arguments pushed for call");
+    }
+
+    map<string, Function>::const_iterator entry = functions.find(name);
+    if (entry == functions.end()) {
+        throw VMError("call to undefined function '" + name + "'");
+    }
+    const vector<string>& parameters = formals[name];
+    if (parameters.size() != static_cast<size_t>(count)) {
+        throw VMError("function '" + name + "' expects " + to_string(parameters.size()) +
+                      " argument(s) but got " + to_string(count));
+    }
+
+    map<string, int> locals;
+    for (int i = 0; i < count; ++i) {
+        locals[parameters[i]] = pending[pending.size() - count + i];
+    }
+    pending.resize(pending.size() - count);
+    return execute(name, locals);
+}
+
+void VirtualMachine::printOutput(const string& token, map<string, int>& locals) const {
+    if (isCharLiteral(token)) {
+        cout << token[1] << '\n';
+        return;
+    }
+    const int result = operand(token, locals);
+    if (types.count(token) && types.at(token) == "char") {
+        cout << static_cast<char>(result) << '\n';
+    } else {
+        cout << result << '\n';
+    }
+}
+
+int VirtualMachine::operand(const string& token, map<string, int>& locals) const {
+    if (isCharLiteral(token)) {
+        return static_cast<unsigned char>(token[1]);
+    }
+
+    size_t start = (!token.empty() && token[0] == '-') ? 1 : 0;
+    bool numeric = start < token.size();
+    for (size_t i = start; numeric && i < token.size(); ++i) {
+        if (!isdigit(static_cast<unsigned char>(token[i]))) numeric = false;
+    }
+    if (numeric) return stoi(token);
+
+    map<string, int>::const_iterator local = locals.find(token);
+    if (local != locals.end()) return local->second;
+
+    map<string, int>::const_iterator global = globals.find(token);
+    if (global != globals.end()) return global->second;
+
+    return 0;
+}
+
+void VirtualMachine::assign(const string& name, int value, map<string, int>& locals) {
+    if (locals.find(name) != locals.end()) {
+        locals[name] = value;
+    } else if (globals.find(name) != globals.end()) {
+        globals[name] = value;
+    } else {
+        locals[name] = value;
+    }
+}
+
+int VirtualMachine::apply(const string& op, int left, int right, size_t pc) const {
+    if (op == "+") return left + right;
+    if (op == "-") return left - right;
+    if (op == "*") return left * right;
+    if (op == "/") {
+        if (right == 0) throw fail(pc, "division by zero");
+        return left / right;
+    }
+    if (op == "%") {
+        if (right == 0) throw fail(pc, "modulo by zero");
+        return left % right;
+    }
+    if (op == "<") return left < right;
+    if (op == ">") return left > right;
+    if (op == "<=") return left <= right;
+    if (op == ">=") return left >= right;
+    if (op == "==") return left == right;
+    if (op == "!=") return left != right;
+    throw fail(pc, "unknown operator '" + op + "'");
+}
+
+size_t VirtualMachine::label(const string& name) const {
+    map<string, size_t>::const_iterator entry = labels.find(name);
+    if (entry == labels.end()) {
+        throw VMError("unknown label '" + name + "'");
+    }
+    return entry->second;
+}
+
+VMError VirtualMachine::fail(size_t pc, const string& message) const {
+    return VMError(message + " near: " + code[pc]);
+}
+
+bool VirtualMachine::isCharLiteral(const string& token) {
+    return token.size() >= 2 && token.front() == '\'' && token.back() == '\'';
+}
+
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        cerr << "Usage: " << argv[0] << " <source-file.cmm>\n";
+    bool run = false;
+    string source;
+
+    for (int i = 1; i < argc; ++i) {
+        const string argument = argv[i];
+        if (argument == "--run") {
+            run = true;
+        } else if (!argument.empty() && argument[0] == '-') {
+            cerr << "Unknown option: " << argument << "\n";
+            return 1;
+        } else if (source.empty()) {
+            source = argument;
+        } else {
+            cerr << "Only one source file may be given\n";
+            return 1;
+        }
+    }
+
+    if (source.empty()) {
+        cerr << "Usage: " << argv[0] << " [--run] <source-file.cmm>\n";
         return 1;
     }
 
-    ifstream file(argv[1]);
+    ifstream file(source);
     if (!file) {
-        cerr << "Error: cannot open file " << argv[1] << "\n";
+        cerr << "Error: cannot open file " << source << "\n";
         return 1;
     }
 
     try {
         Parser parser(file);
         parser.parse();
-        parser.codegen().writeOutputs("tac.txt", "symtab.txt");
+
+        CodeGen& gen = parser.codegen();
+        gen.writeOutputs("tac.txt", "symtab.txt");
         cout << "Parsing successful.\n"
              << "TAC written to tac.txt\n"
              << "Symbol table written to symtab.txt\n";
+
+        if (run) {
+            VirtualMachine vm(gen.tacLines(), gen.symbolTypes(), gen.globalNames());
+            vm.run();
+        }
     } catch (const ParseError& error) {
         cerr << error.what() << '\n';
+        return 1;
+    } catch (const VMError& error) {
+        cerr << "Runtime error: " << error.what() << '\n';
         return 1;
     } catch (const exception& error) {
         cerr << "Error: " << error.what() << '\n';
