@@ -2,7 +2,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2
 CPPFLAGS += -Isrc
 
-SRC := src/lexer.cpp src/parser.cpp src/codegen.cpp src/main.cpp
+SRC := src/lexer.cpp src/parser.cpp src/codegen.cpp src/vm.cpp src/main.cpp
 BIN := build/cmmc
 
 .PHONY: all debug clean
@@ -23,3 +23,4 @@ $(BIN): $(SRC) src/lexer.hpp src/parser.hpp src/codegen.hpp
 
 clean:
 	rm -rf build
+# commit 2 – Makefile tweak
