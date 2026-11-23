@@ -1,0 +1,17 @@
+int fact(int n) {
+    int result;
+    if (n <= 1) {
+        return 1;
+    }
+    result = n * fact(n - 1);
+    return result;
+}
+
+int main() {
+    int n;
+    int answer;
+    in(n);
+    answer = fact(n);
+    out(answer);
+    return 0;
+}
