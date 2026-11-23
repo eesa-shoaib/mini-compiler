@@ -18,9 +18,27 @@ void CodeGen::emit(const string& line) {
     tac.push_back(line);
 }
 
-void CodeGen::addSymbol(const string& name, const string& kind, const string& type) {
+void CodeGen::addSymbol(const string& name, const string& kind, const string& type,
+                        bool isGlobal) {
     symbols.push_back(Symbol{name, kind, type, nextAddress, "-"});
+    if (isGlobal && kind == "variable") globals.insert(name);
     nextAddress += 4;
+}
+
+const vector<string>& CodeGen::tacLines() const {
+    return tac;
+}
+
+map<string, string> CodeGen::symbolTypes() const {
+    map<string, string> types;
+    for (const Symbol& symbol : symbols) {
+        types[symbol.name] = symbol.type;
+    }
+    return types;
+}
+
+set<string> CodeGen::globalNames() const {
+    return globals;
 }
 
 void CodeGen::writeOutputs(const string& tacPath, const string& symPath) const {
